@@ -421,27 +421,12 @@ class MemoryGraph:
             data (str): The data to add to the graph.
             filters (dict): A dictionary containing filters to be applied during the addition.
         """
-        start_time = time.time()
-        current_time = time.time()
         entity_type_map = self._retrieve_nodes_from_data(data, filters)
-        print(f"Retrieve nodes from data time: {time.time() - current_time:.2f} seconds")
-        current_time = time.time()
         to_be_added = self._establish_nodes_relations_from_data(data, filters, entity_type_map)
-        print(f"Establish nodes and relations from data time: {time.time() - current_time:.2f} seconds")
-        current_time = time.time()
         search_output = self._search_graph_db(node_list=list(entity_type_map.keys()), filters=filters)
-        print(f"Search graph db time: {time.time() - current_time:.2f} seconds")
-        current_time = time.time()
         to_be_deleted = self._get_delete_entities_from_search_output(search_output, data, filters)
-        print(f"Get delete entities from search output time: {time.time() - current_time:.2f} seconds")
-        current_time = time.time()
         deleted_entities = self._delete_entities(to_be_deleted, filters)
-        print(f"Delete entities time: {time.time() - current_time:.2f} seconds")
-        current_time = time.time()
         added_entities = self._add_entities(to_be_added, filters, entity_type_map)
-        print(f"Add entities time: {time.time() - current_time:.2f} seconds")
-        current_time = time.time()
-        print(f"Total add time: {time.time() - start_time:.2f} seconds")
         return {"deleted_entities": deleted_entities, "added_entities": added_entities}
 
     def search(self, query, filters, limit=5):

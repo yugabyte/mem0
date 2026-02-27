@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 import os
-import time
 import uuid
 import warnings
 from copy import deepcopy
@@ -328,7 +327,6 @@ class Memory(MemoryBase):
             LLMError: If LLM operations fail.
             DatabaseError: If database operations fail.
         """
-        start_time = time.time()
         processed_metadata, effective_filters = _build_filters_and_metadata(
             user_id=user_id,
             agent_id=agent_id,
@@ -371,7 +369,6 @@ class Memory(MemoryBase):
             vector_store_result = future1.result()
             graph_result = future2.result()
         if self.enable_graph:
-            print(f"Total return time: {time.time() - start_time:.2f} seconds")
             return {
                 "results": vector_store_result,
                 "relations": graph_result,
@@ -594,14 +591,12 @@ class Memory(MemoryBase):
     def _add_to_graph(self, messages, filters):
         added_entities = []
         if self.enable_graph:
-            current_time = time.time()
             if filters.get("user_id") is None:
                 filters["user_id"] = "user"
 
             data = "\n".join([msg["content"] for msg in messages if "content" in msg and msg["role"] != "system"])
             added_entities = self.graph.add(data, filters)
 
-        print(f"Total graph add time: {time.time() - current_time:.2f} seconds")
         return added_entities
 
     def get(self, memory_id):
