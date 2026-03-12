@@ -9,19 +9,63 @@ from jinja2 import Template
 from openai import OpenAI
 from prompts import ANSWER_PROMPT, ANSWER_PROMPT_GRAPH
 from tqdm import tqdm
+from mem0.memory.main import Memory
 
-from mem0 import MemoryClient
+# from mem0 import MemoryClient
 
 load_dotenv()
 
 
 class MemorySearch:
     def __init__(self, output_path="results.json", top_k=10, filter_memories=False, is_graph=False):
-        self.mem0_client = MemoryClient(
-            api_key=os.getenv("MEM0_API_KEY"),
-            org_id=os.getenv("MEM0_ORGANIZATION_ID"),
-            project_id=os.getenv("MEM0_PROJECT_ID"),
-        )
+        config = {
+            "llm": {
+                "provider": "openai",
+                "config": {
+                    "model": "gpt-4o",
+                    "api_key": "<YOUR_OPENAI_API_KEY>",
+                },
+            },
+            "embedder": {
+                "provider": "openai",
+                "config": {
+                    "model": "text-embedding-3-small",
+                    "api_key": "<YOUR_OPENAI_API_KEY>",
+                    "embedding_dims": 1536,
+                },
+            },
+            "vector_store": {
+                "provider": "pgvector",
+                "config": {
+                    "host": "<YUGABYTE_HOST>",
+                    "port": <YUGABYTE_PORT>,
+                    "dbname": "<YUGABYTE_DB_NAME>",
+                    "user": "<YUGABYTE_USER>",
+                    "password": "<YUGABYTE_PASSWORD>",
+                    "embedding_model_dims": 1536,
+                },
+            },
+            "graph_store": {
+                "provider": "apache_age",
+                "config": {
+                    "host": "<YUGABYTE_HOST>",
+                    "port": <YUGABYTE_PORT>,
+                    "database": "<YUGABYTE_DB_NAME>",
+                    "user": "<YUGABYTE_USER>",
+                    "password": "<YUGABYTE_PASSWORD>",
+                    "graph_name": "<YUGABYTE_GRAPH_NAME>",
+                },
+                "threshold": 0.7,
+            },
+            "threshold": 0.7
+        }
+        self.mem0_client = Memory.from_config(config)
+        # self.mem0_client = MemoryClient(
+        #     api_key=os.getenv("MEM0_API_KEY"),
+        #     org_id=os.getenv("MEM0_ORGANIZATION_ID"),
+        #     project_id=os.getenv("MEM0_PROJECT_ID"),
+        # )
+
         self.top_k = top_k
         self.openai_client = OpenAI()
         self.results = defaultdict(list)
@@ -42,16 +86,19 @@ class MemorySearch:
                 if self.is_graph:
                     print("Searching with graph")
                     memories = self.mem0_client.search(
+                        # query,
+                        # user_id=user_id,
+                        # top_k=self.top_k,
+                        # filter_memories=self.filter_memories,
+                        # enable_graph=True,
+                        # output_format="v1.1",
                         query,
                         user_id=user_id,
-                        top_k=self.top_k,
-                        filter_memories=self.filter_memories,
-                        enable_graph=True,
-                        output_format="v1.1",
                     )
                 else:
                     memories = self.mem0_client.search(
-                        query, user_id=user_id, top_k=self.top_k, filter_memories=self.filter_memories
+                        # query, user_id=user_id, top_k=self.top_k, filter_memories=self.filter_memories
+                        query, user_id=user_id,
                     )
                 break
             except Exception as e:
@@ -82,7 +129,7 @@ class MemorySearch:
                 for memory in memories["results"]
             ]
             graph_memories = [
-                {"source": relation["source"], "relationship": relation["relationship"], "target": relation["target"]}
+                {"source": relation["source"], "relationship": relation["relationship"], "target": relation["destination"]}
                 for relation in memories["relations"]
             ]
         return semantic_memories, graph_memories, end_time - start_time

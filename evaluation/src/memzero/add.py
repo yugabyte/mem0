@@ -7,7 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from tqdm import tqdm
 
-from mem0 import MemoryClient
+# from mem0 import MemoryClient
+from mem0.memory.main import Memory
 
 load_dotenv()
 
@@ -44,13 +45,55 @@ Generate personal memories that follow these guidelines:
 
 class MemoryADD:
     def __init__(self, data_path=None, batch_size=2, is_graph=False):
-        self.mem0_client = MemoryClient(
-            api_key=os.getenv("MEM0_API_KEY"),
-            org_id=os.getenv("MEM0_ORGANIZATION_ID"),
-            project_id=os.getenv("MEM0_PROJECT_ID"),
-        )
+        config = {
+            "llm": {
+                "provider": "openai",
+                "config": {
+                    "model": "gpt-4o",
+                    "api_key": "<YOUR_OPENAI_API_KEY>",
+                },
+            },
+            "embedder": {
+                "provider": "openai",
+                "config": {
+                    "model": "text-embedding-3-small",
+                    "api_key": "<YOUR_OPENAI_API_KEY>",
+                    "embedding_dims": 1536,
+                },
+            },
+            "vector_store": {
+                "provider": "pgvector",
+                "config": {
+                    "host": "<YUGABYTE_HOST>",
+                    "port": <YUGABYTE_PORT>,
+                    "dbname": "<YUGABYTE_DB_NAME>",
+                    "user": "<YUGABYTE_USER>",
+                    "password": "<YUGABYTE_PASSWORD>",
+                    "embedding_model_dims": 1536,
+                },
+            },
+            "graph_store": {
+                "provider": "apache_age",
+                "config": {
+                    "host": "<YUGABYTE_HOST>",
+                    "port": <YUGABYTE_PORT>,
+                    "database": "<YUGABYTE_DB_NAME>",
+                    "user": "<YUGABYTE_USER>",
+                    "password": "<YUGABYTE_PASSWORD>",
+                    "graph_name": "<YUGABYTE_GRAPH_NAME>",
+                },
+                "threshold": 0.7,
+            },
+            "threshold": 0.7
+        }
+        self.mem0_client = Memory.from_config(config)
+        # self.mem0_client = MemoryClient(
+        #     api_key=os.getenv("MEM0_API_KEY"),
+        #     org_id=os.getenv("MEM0_ORGANIZATION_ID"),
+        #     project_id=os.getenv("MEM0_PROJECT_ID"),
+        # )
 
-        self.mem0_client.update_project(custom_instructions=custom_instructions)
+        # self.mem0_client.update_project(custom_instructions=custom_instructions)
         self.batch_size = batch_size
         self.data_path = data_path
         self.data = None
@@ -67,7 +110,8 @@ class MemoryADD:
         for attempt in range(retries):
             try:
                 _ = self.mem0_client.add(
-                    message, user_id=user_id, version="v2", metadata=metadata, enable_graph=self.is_graph
+                    # message, user_id=user_id, version="v2", metadata=metadata, enable_graph=self.is_graph
+                    message, user_id=user_id, metadata=metadata
                 )
                 return
             except Exception as e:
@@ -91,8 +135,9 @@ class MemoryADD:
         speaker_b_user_id = f"{speaker_b}_{idx}"
 
         # delete all memories for the two users
-        self.mem0_client.delete_all(user_id=speaker_a_user_id)
-        self.mem0_client.delete_all(user_id=speaker_b_user_id)
+        # self.mem0_client.delete_all(user_id=speaker_a_user_id)
+        # self.mem0_client.delete_all(user_id=speaker_b_user_id)
+        
 
         for key in conversation.keys():
             if key in ["speaker_a", "speaker_b"] or "date" in key or "timestamp" in key:

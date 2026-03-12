@@ -3,7 +3,7 @@ import json
 import pandas as pd
 
 # Load the evaluation metrics data
-with open("evaluation_metrics.json", "r") as f:
+with open("<result_from_evals.py>", "r") as f:
     data = json.load(f)
 
 # Flatten the data into a list of question items
