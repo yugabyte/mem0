@@ -10,7 +10,7 @@ import warnings
 from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, Optional
-
+from langfuse import observe
 import pytz
 from pydantic import ValidationError
 
@@ -47,6 +47,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*swigva
 
 # Initialize logger early for util functions
 logger = logging.getLogger(__name__)
+
 
 
 def _safe_deepcopy_config(config):
@@ -233,6 +234,7 @@ class Memory(MemoryBase):
         capture_event("mem0.init", self, {"sync_type": "sync"})
 
     @classmethod
+    @observe(name="mem0_core-from_config", as_type="trace")
     def from_config(cls, config_dict: Dict[str, Any]):
         try:
             config = cls._process_config(config_dict)
@@ -243,6 +245,7 @@ class Memory(MemoryBase):
         return cls(config)
 
     @staticmethod
+    @observe(name="mem0_core-_process_config", as_type="trace")
     def _process_config(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         if "graph_store" in config_dict:
             if "vector_store" not in config_dict and "embedder" in config_dict:
@@ -257,6 +260,7 @@ class Memory(MemoryBase):
             logger.error(f"Configuration validation error: {e}")
             raise
 
+    @observe(name="mem0_core-_should_use_agent_memory_extraction", as_type="trace")
     def _should_use_agent_memory_extraction(self, messages, metadata):
         """Determine whether to use agent memory extraction based on the logic:
         - If agent_id is present and messages contain assistant role -> True
@@ -278,6 +282,7 @@ class Memory(MemoryBase):
         # Use agent memory extraction if agent_id is present and there are assistant messages
         return has_agent_id and has_assistant_messages
 
+    @observe(name="mem0_core-add", as_type="trace")
     def add(
         self,
         messages,
@@ -383,6 +388,7 @@ class Memory(MemoryBase):
 
         return {"results": vector_store_result}
 
+    @observe(name="mem0_core-_add_to_vector_store", as_type="trace")
     def _add_to_vector_store(self, messages, metadata, filters, infer):
         if not infer:
             returned_memories = []
@@ -596,6 +602,7 @@ class Memory(MemoryBase):
         )
         return returned_memories
 
+    @observe(name="mem0_core-_add_to_graph", as_type="trace")
     def _add_to_graph(self, messages, filters):
         added_entities = []
         if self.enable_graph:
@@ -607,6 +614,7 @@ class Memory(MemoryBase):
 
         return added_entities
 
+    @observe(name="mem0_core-get", as_type="trace")
     def get(self, memory_id):
         """
         Retrieve a memory by ID.
@@ -650,6 +658,7 @@ class Memory(MemoryBase):
 
         return result_item
 
+    @observe(name="mem0_core-get_all", as_type="trace")
     def get_all(
         self,
         *,
@@ -708,6 +717,7 @@ class Memory(MemoryBase):
 
         return {"results": all_memories_result}
 
+    @observe(name="mem0_core-_get_all_from_vector_store", as_type="trace")
     def _get_all_from_vector_store(self, filters, limit):
         memories_result = self.vector_store.list(filters=filters, limit=limit)
 
@@ -755,6 +765,7 @@ class Memory(MemoryBase):
 
         return formatted_memories
 
+    @observe(name="mem0_core-search", as_type="trace")
     def search(
         self,
         query: str,
@@ -855,6 +866,7 @@ class Memory(MemoryBase):
 
         return {"results": original_memories}
 
+    @observe(name="mem0_core-_process_metadata_filters", as_type="trace")
     def _process_metadata_filters(self, metadata_filters: Dict[str, Any]) -> Dict[str, Any]:
         """
         Process enhanced metadata filters and convert them to vector store compatible format.
@@ -924,6 +936,7 @@ class Memory(MemoryBase):
         
         return processed_filters
 
+    @observe(name="mem0_core-_has_advanced_operators", as_type="trace")
     def _has_advanced_operators(self, filters: Dict[str, Any]) -> bool:
         """
         Check if filters contain advanced operators that need special processing.
@@ -951,6 +964,7 @@ class Memory(MemoryBase):
                 return True
         return False
 
+    @observe(name="mem0_core-_search_vector_store", as_type="trace")
     def _search_vector_store(self, query, filters, limit, threshold: Optional[float] = None):
         embeddings = self.embedding_model.embed(query, "search")
         memories = self.vector_store.search(query=query, vectors=embeddings, limit=limit, filters=filters)
@@ -989,6 +1003,7 @@ class Memory(MemoryBase):
 
         return original_memories
 
+    @observe(name="mem0_core-update", as_type="trace")
     def update(self, memory_id, data):
         """
         Update a memory by ID.
@@ -1011,6 +1026,7 @@ class Memory(MemoryBase):
         self._update_memory(memory_id, data, existing_embeddings)
         return {"message": "Memory updated successfully!"}
 
+    @observe(name="mem0_core-delete", as_type="trace")
     def delete(self, memory_id):
         """
         Delete a memory by ID.
@@ -1022,6 +1038,7 @@ class Memory(MemoryBase):
         self._delete_memory(memory_id)
         return {"message": "Memory deleted successfully!"}
 
+    @observe(name="mem0_core-delete_all", as_type="trace")
     def delete_all(self, user_id: Optional[str] = None, agent_id: Optional[str] = None, run_id: Optional[str] = None):
         """
         Delete all memories.
@@ -1059,6 +1076,7 @@ class Memory(MemoryBase):
 
         return {"message": "Memories deleted successfully!"}
 
+    @observe(name="mem0_core-history", as_type="trace")
     def history(self, memory_id):
         """
         Get the history of changes for a memory by ID.
@@ -1072,6 +1090,7 @@ class Memory(MemoryBase):
         capture_event("mem0.history", self, {"memory_id": memory_id, "sync_type": "sync"})
         return self.db.get_history(memory_id)
 
+    @observe(name="mem0_core-_create_memory", as_type="trace")
     def _create_memory(self, data, existing_embeddings, metadata=None):
         logger.debug(f"Creating memory with {data=}")
         if data in existing_embeddings:
@@ -1100,6 +1119,7 @@ class Memory(MemoryBase):
         )
         return memory_id
 
+    @observe(name="mem0_core-_create_procedural_memory", as_type="trace")
     def _create_procedural_memory(self, messages, metadata=None, prompt=None):
         """
         Create a procedural memory
@@ -1139,6 +1159,7 @@ class Memory(MemoryBase):
 
         return result
 
+    @observe(name="mem0_core-_update_memory", as_type="trace")
     def _update_memory(self, memory_id, data, existing_embeddings, metadata=None):
         logger.info(f"Updating memory with {data=}")
 
@@ -1193,6 +1214,7 @@ class Memory(MemoryBase):
         )
         return memory_id
 
+    @observe(name="mem0_core-_delete_memory", as_type="trace")
     def _delete_memory(self, memory_id):
         logger.info(f"Deleting memory with {memory_id=}")
         existing_memory = self.vector_store.get(vector_id=memory_id)
@@ -1209,6 +1231,7 @@ class Memory(MemoryBase):
         )
         return memory_id
 
+    @observe(name="mem0_core-reset", as_type="trace")
     def reset(self):
         """
         Reset the memory store by:
@@ -1234,6 +1257,7 @@ class Memory(MemoryBase):
             )
         capture_event("mem0.reset", self, {"sync_type": "sync"})
 
+    @observe(name="mem0_core-chat", as_type="trace")
     def chat(self, query):
         raise NotImplementedError("Chat function not implemented yet.")
 
@@ -1283,6 +1307,7 @@ class AsyncMemory(MemoryBase):
         capture_event("mem0.init", self, {"sync_type": "async"})
 
     @classmethod
+    @observe(name="mem0_core-from_config(async)", as_type="trace")
     async def from_config(cls, config_dict: Dict[str, Any]):
         try:
             config = cls._process_config(config_dict)
@@ -1293,6 +1318,7 @@ class AsyncMemory(MemoryBase):
         return cls(config)
 
     @staticmethod
+    @observe(name="mem0_core-_process_config", as_type="trace")
     def _process_config(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         if "graph_store" in config_dict:
             if "vector_store" not in config_dict and "embedder" in config_dict:
@@ -1306,7 +1332,8 @@ class AsyncMemory(MemoryBase):
         except ValidationError as e:
             logger.error(f"Configuration validation error: {e}")
             raise
-
+    
+    @observe(name="mem0_core-_should_use_agent_memory_extraction", as_type="trace")
     def _should_use_agent_memory_extraction(self, messages, metadata):
         """Determine whether to use agent memory extraction based on the logic:
         - If agent_id is present and messages contain assistant role -> True
@@ -1328,6 +1355,7 @@ class AsyncMemory(MemoryBase):
         # Use agent memory extraction if agent_id is present and there are assistant messages
         return has_agent_id and has_assistant_messages
 
+    @observe(name="mem0_core-add(async)", as_type="trace")
     async def add(
         self,
         messages,
@@ -1407,6 +1435,7 @@ class AsyncMemory(MemoryBase):
 
         return {"results": vector_store_result}
 
+    @observe(name="mem0_core-_add_to_vector_store(async)", as_type="trace")
     async def _add_to_vector_store(
         self,
         messages: list,
@@ -1640,6 +1669,7 @@ class AsyncMemory(MemoryBase):
         )
         return returned_memories
 
+    @observe(name="mem0_core-_add_to_graph(async)", as_type="trace")
     async def _add_to_graph(self, messages, filters):
         added_entities = []
         if self.enable_graph:
@@ -1651,6 +1681,7 @@ class AsyncMemory(MemoryBase):
 
         return added_entities
 
+    @observe(name="mem0_core-get(async)", as_type="trace")
     async def get(self, memory_id):
         """
         Retrieve a memory by ID asynchronously.
@@ -1694,6 +1725,7 @@ class AsyncMemory(MemoryBase):
 
         return result_item
 
+    @observe(name="mem0_core-get_all(async)", as_type="trace")
     async def get_all(
         self,
         *,
@@ -1757,6 +1789,7 @@ class AsyncMemory(MemoryBase):
 
         return results_dict
 
+    @observe(name="mem0_core-_get_all_from_vector_store(async)", as_type="trace")
     async def _get_all_from_vector_store(self, filters, limit):
         memories_result = await asyncio.to_thread(self.vector_store.list, filters=filters, limit=limit)
 
@@ -1804,6 +1837,7 @@ class AsyncMemory(MemoryBase):
 
         return formatted_memories
 
+    @observe(name="mem0_core-search(async)", as_type="trace")
     async def search(
         self,
         query: str,
@@ -1911,6 +1945,7 @@ class AsyncMemory(MemoryBase):
 
         return {"results": original_memories}
 
+    @observe(name="mem0_core-_process_metadata_filters", as_type="trace")
     def _process_metadata_filters(self, metadata_filters: Dict[str, Any]) -> Dict[str, Any]:
         """
         Process enhanced metadata filters and convert them to vector store compatible format.
@@ -1980,6 +2015,7 @@ class AsyncMemory(MemoryBase):
 
         return processed_filters
 
+    @observe(name="mem0_core-_has_advanced_operators", as_type="trace")
     def _has_advanced_operators(self, filters: Dict[str, Any]) -> bool:
         """
         Check if filters contain advanced operators that need special processing.
@@ -2007,6 +2043,7 @@ class AsyncMemory(MemoryBase):
                 return True
         return False
 
+    @observe(name="mem0_core-_search_vector_store(async)", as_type="trace")
     async def _search_vector_store(self, query, filters, limit, threshold: Optional[float] = None):
         embeddings = await asyncio.to_thread(self.embedding_model.embed, query, "search")
         memories = await asyncio.to_thread(
@@ -2047,6 +2084,7 @@ class AsyncMemory(MemoryBase):
 
         return original_memories
 
+    @observe(name="mem0_core-update(async)", as_type="trace")
     async def update(self, memory_id, data):
         """
         Update a memory by ID asynchronously.
@@ -2070,6 +2108,7 @@ class AsyncMemory(MemoryBase):
         await self._update_memory(memory_id, data, existing_embeddings)
         return {"message": "Memory updated successfully!"}
 
+    @observe(name="mem0_core-delete(async)", as_type="trace")
     async def delete(self, memory_id):
         """
         Delete a memory by ID asynchronously.
@@ -2081,6 +2120,7 @@ class AsyncMemory(MemoryBase):
         await self._delete_memory(memory_id)
         return {"message": "Memory deleted successfully!"}
 
+    @observe(name="mem0_core-delete_all(async)", as_type="trace")
     async def delete_all(self, user_id=None, agent_id=None, run_id=None):
         """
         Delete all memories asynchronously.
@@ -2120,6 +2160,7 @@ class AsyncMemory(MemoryBase):
 
         return {"message": "Memories deleted successfully!"}
 
+    @observe(name="mem0_core-history(async)", as_type="trace")
     async def history(self, memory_id):
         """
         Get the history of changes for a memory by ID asynchronously.
@@ -2133,6 +2174,7 @@ class AsyncMemory(MemoryBase):
         capture_event("mem0.history", self, {"memory_id": memory_id, "sync_type": "async"})
         return await asyncio.to_thread(self.db.get_history, memory_id)
 
+    @observe(name="mem0_core-_create_memory(async)", as_type="trace")
     async def _create_memory(self, data, existing_embeddings, metadata=None):
         logger.debug(f"Creating memory with {data=}")
         if data in existing_embeddings:
@@ -2166,6 +2208,7 @@ class AsyncMemory(MemoryBase):
 
         return memory_id
 
+    @observe(name="mem0_core-_create_procedural_memory(async)", as_type="trace")
     async def _create_procedural_memory(self, messages, metadata=None, llm=None, prompt=None):
         """
         Create a procedural memory asynchronously
@@ -2219,6 +2262,7 @@ class AsyncMemory(MemoryBase):
 
         return result
 
+    @observe(name="mem0_core-_update_memory(async)", as_type="trace")
     async def _update_memory(self, memory_id, data, existing_embeddings, metadata=None):
         logger.info(f"Updating memory with {data=}")
 
@@ -2276,6 +2320,7 @@ class AsyncMemory(MemoryBase):
         )
         return memory_id
 
+    @observe(name="mem0_core-_delete_memory(async)", as_type="trace")
     async def _delete_memory(self, memory_id):
         logger.info(f"Deleting memory with {memory_id=}")
         existing_memory = await asyncio.to_thread(self.vector_store.get, vector_id=memory_id)
@@ -2295,6 +2340,7 @@ class AsyncMemory(MemoryBase):
 
         return memory_id
 
+    @observe(name="mem0_core-reset(async)", as_type="trace")
     async def reset(self):
         """
         Reset the memory store asynchronously by:
@@ -2321,5 +2367,6 @@ class AsyncMemory(MemoryBase):
         )
         capture_event("mem0.reset", self, {"sync_type": "async"})
 
+    @observe(name="mem0_core-chat(async)", as_type="trace")
     async def chat(self, query):
         raise NotImplementedError("Chat function not implemented yet.")
