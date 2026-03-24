@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "meko-mem0"
-version = "1.0.4.1"
+version = "1.0.4.3"
 description = "Long-term memory for AI Agents"
 authors = [
     { name = "YugabyteDB", email = "pypi@yugabyte.com" }

@@ -170,23 +170,23 @@ class AWSBedrockLLM(LLMBase):
 
         return "\n".join(formatted_messages)
 
-    def _format_messages_amazon(self, messages: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-        """Format messages for Amazon models (including Nova)."""
+    def _format_messages_amazon(self, messages: List[Dict[str, str]]) -> tuple[List[Dict[str, Any]], Optional[str]]:
+        """Format messages for Amazon models (including Nova) using Converse API format."""
         formatted_messages = []
-        
+        system_message = None
+
         for message in messages:
             role = message["role"]
             content = message["content"]
-            
+
             if role == "system":
-                # Amazon models support system messages
-                formatted_messages.append({"role": "system", "content": content})
+                system_message = content
             elif role == "user":
-                formatted_messages.append({"role": "user", "content": content})
+                formatted_messages.append({"role": "user", "content": [{"text": content}]})
             elif role == "assistant":
-                formatted_messages.append({"role": "assistant", "content": content})
-        
-        return formatted_messages
+                formatted_messages.append({"role": "assistant", "content": [{"text": content}]})
+
+        return formatted_messages, system_message
 
     def _format_messages_meta(self, messages: List[Dict[str, str]]) -> str:
         """Format messages for Meta models."""
@@ -481,23 +481,20 @@ class AWSBedrockLLM(LLMBase):
 
     def _generate_with_tools(self, messages: List[Dict[str, str]], tools: List[Dict], stream: bool = False) -> Dict[str, Any]:
         """Generate response with tool calling support using correct message format."""
-        # Format messages for tool-enabled models
         system_message = None
         if self.provider == "anthropic":
             formatted_messages, system_message = self._format_messages_anthropic(messages)
         elif self.provider == "amazon":
-            formatted_messages = self._format_messages_amazon(messages)
+            formatted_messages, system_message = self._format_messages_amazon(messages)
         else:
             formatted_messages = [{"role": "user", "content": [{"text": messages[-1]["content"]}]}]
 
-        # Prepare tool configuration in Converse API format
         tool_config = None
         if tools:
             converse_tools = self._convert_tools_to_converse_format(tools)
             if converse_tools:
                 tool_config = {"tools": converse_tools}
 
-        # Prepare converse parameters
         converse_params = {
             "modelId": self.config.model,
             "messages": formatted_messages,
@@ -508,15 +505,12 @@ class AWSBedrockLLM(LLMBase):
             }
         }
 
-        # Add system message if present (for Anthropic)
         if system_message:
             converse_params["system"] = [{"text": system_message}]
 
-        # Add tool config if present
         if tool_config:
             converse_params["toolConfig"] = tool_config
 
-        # Make API call
         response = self.client.converse(**converse_params)
 
         return self._parse_response(response, tools)
@@ -554,27 +548,26 @@ class AWSBedrockLLM(LLMBase):
                 return str(response)
 
         elif self.provider == "amazon" and "nova" in self.config.model.lower():
-            # Nova models use converse API even without tools
-            formatted_messages = self._format_messages_amazon(messages)
-            input_body = {
+            formatted_messages, system_message = self._format_messages_amazon(messages)
+
+            converse_params = {
+                "modelId": self.config.model,
                 "messages": formatted_messages,
-                "max_tokens": self.model_config.get("max_tokens", 5000),
-                "temperature": self.model_config.get("temperature", 0.1),
-                "top_p": self.model_config.get("top_p", 0.9),
-            }
-            
-            # Use converse API for Nova models
-            response = self.client.converse(
-                modelId=self.config.model,
-                messages=input_body["messages"],
-                inferenceConfig={
-                    "maxTokens": input_body["max_tokens"],
-                    "temperature": input_body["temperature"],
-                    "topP": input_body["top_p"],
+                "inferenceConfig": {
+                    "maxTokens": self.model_config.get("max_tokens", 5000),
+                    "temperature": self.model_config.get("temperature", 0.1),
+                    "topP": self.model_config.get("top_p", 0.9),
                 }
-            )
-            
-            return self._parse_response(response)
+            }
+
+            if system_message:
+                converse_params["system"] = [{"text": system_message}]
+
+            response = self.client.converse(**converse_params)
+
+            if "output" in response and "message" in response["output"]:
+                return response["output"]["message"]["content"][0]["text"]
+            return str(response)
         else:
             # For other providers and legacy Amazon models (like Titan)
             if self.provider == "amazon":
@@ -644,8 +637,7 @@ class AWSBedrockLLM(LLMBase):
         try:
             # Try to invoke the model with a minimal request
             if self.provider == "amazon" and "nova" in self.config.model.lower():
-                # Test Nova model with converse API
-                test_messages = [{"role": "user", "content": "test"}]
+                test_messages = [{"role": "user", "content": [{"text": "test"}]}]
                 self.client.converse(
                     modelId=self.config.model,
                     messages=test_messages,
