@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from typing import Dict, List, Optional, Union
+from langfuse import observe, get_client
 
 from openai import OpenAI
 
@@ -80,6 +81,7 @@ class OpenAILLM(LLMBase):
         else:
             return response.choices[0].message.content
 
+    @observe(name="OpenAI Generation", as_type="generation")
     def generate_response(
         self,
         messages: List[Dict[str, str]],
@@ -136,6 +138,17 @@ class OpenAILLM(LLMBase):
             params["tools"] = tools
             params["tool_choice"] = tool_choice
         response = self.client.chat.completions.create(**params)
+
+        langfuse = get_client()
+        langfuse.update_current_generation(
+            usage_details={
+                "input": response.usage.prompt_tokens,
+                "output": response.usage.completion_tokens,
+                "total": response.usage.total_tokens,
+            },
+            model=params.get("model"),
+            input=messages,
+        )
         parsed_response = self._parse_response(response, tools)
         if self.config.response_callback:
             try:

@@ -1,7 +1,7 @@
 import json
 import logging
 import time
-
+from langfuse import observe
 from mem0.memory.utils import format_entities, sanitize_relationship_for_cypher
 
 try:
@@ -151,6 +151,7 @@ class MemoryGraph:
                 """
             )
 
+    @observe(name="Execute Query (yugabytedb / graph)", as_type="span")
     def _execute_sql(self, sql, params=None, fetch=False):
         with self.conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(sql, params or [])
@@ -158,6 +159,7 @@ class MemoryGraph:
                 return cursor.fetchall()
             return []
 
+    @observe(name="Upsert Embedding (yugabytedb / graph)", as_type="span")
     def _upsert_embedding(self, node_graphid, node_name, embedding, filters):
         sql = f"""
         INSERT INTO {self.embedding_table}
@@ -184,6 +186,7 @@ class MemoryGraph:
         ]
         self._execute_sql(sql, params=params)
 
+    @observe(name="Delete Embeddings (yugabytedb / graph)", as_type="span")
     def _delete_embeddings(self, filters=None, graph_only=False):
         where_conditions = ["graph_name = %s"]
         params = [self.graph_name]
@@ -202,6 +205,7 @@ class MemoryGraph:
         sql = f"DELETE FROM {self.embedding_table} WHERE {where_clause};"
         self._execute_sql(sql, params=params)
 
+    @observe(name="Search Embeddings (yugabytedb / graph)", as_type="span")
     def _search_embeddings(self, embedding, filters, limit=100, threshold=None):
         threshold_val = threshold if threshold is not None else self.threshold
 
@@ -229,6 +233,7 @@ class MemoryGraph:
         query_params = [embedding, *params, threshold_val, limit]
         return self._execute_sql(sql, params=query_params, fetch=True)
 
+    @observe(name="Execute Cypher Query (yugabytedb / graph)", as_type="span")
     def _execute_cypher(self, cypher_query, parameters=None):
         """Execute a Cypher query using Apache AGE.
         
@@ -413,6 +418,7 @@ class MemoryGraph:
         
         return query
 
+    @observe(name="Addtion (Apache AGE)", as_type="span")
     def add(self, data, filters):
         """
         Adds data to the graph.
@@ -429,6 +435,7 @@ class MemoryGraph:
         added_entities = self._add_entities(to_be_added, filters, entity_type_map)
         return {"deleted_entities": deleted_entities, "added_entities": added_entities}
 
+    @observe(name="Searching (Apache AGE)", as_type="retriever")
     def search(self, query, filters, limit=5):
         """
         Search for memories and related graph data.
@@ -465,6 +472,7 @@ class MemoryGraph:
 
         return search_results
 
+    @observe(name="Delete All (Apache AGE)", as_type="span")
     def delete_all(self, filters):
         """Delete all nodes and relationships for a user or specific agent."""
         # Build node properties for filtering
@@ -490,6 +498,7 @@ class MemoryGraph:
         self._execute_cypher(cypher, parameters=params)
         self._delete_embeddings(filters=filters)
 
+    @observe(name="Get All (Apache AGE)", as_type="retriever")
     def get_all(self, filters, limit=100):
         """
         Retrieves all nodes and relationships from the graph database based on optional filtering criteria.
@@ -628,6 +637,7 @@ class MemoryGraph:
         logger.debug(f"Extracted entities: {entities}")
         return entities
 
+    @observe(name="Search Graph DB (yugabytedb / graph)", as_type="span")
     def _search_graph_db(self, node_list, filters, limit=100, threshold=None):
         """Search similar nodes among and their respective incoming and outgoing relations."""
         result_relations = []
@@ -760,6 +770,7 @@ class MemoryGraph:
         logger.debug(f"Deleted relationships: {to_be_deleted}")
         return to_be_deleted
 
+    @observe(name="Delete Entities (yugabytedb / graph)", as_type="span")
     def _delete_entities(self, to_be_deleted, filters):
         """Delete the entities from the graph."""
         user_id = filters["user_id"]
@@ -813,6 +824,7 @@ class MemoryGraph:
 
         return results
 
+    @observe(name="Add Entities (yugabytedb / graph)", as_type="span")
     def _add_entities(self, to_be_added, filters, entity_type_map):
         """Add the new entities to the graph. Merge the nodes if they already exist."""
         user_id = filters["user_id"]
@@ -1059,6 +1071,7 @@ class MemoryGraph:
             logger.warning(f"Error searching destination node: {e}")
             return []
 
+    @observe(name="Resetting (Apache AGE)", as_type="span")
     def reset(self):
         """Reset the graph by clearing all nodes and relationships."""
         logger.warning("Clearing graph...")
