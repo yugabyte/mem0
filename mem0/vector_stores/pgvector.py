@@ -76,7 +76,13 @@ class PGVector(VectorStoreBase):
         
         if self.connection_pool is None:
             if PSYCOPG_VERSION == 3:
-                self.connection_pool = ConnectionPool(conninfo=connection_string, min_size=minconn, max_size=maxconn, open=True)
+                self.connection_pool = ConnectionPool(
+                    conninfo=connection_string,
+                    min_size=minconn,
+                    max_size=maxconn,
+                    open=True,
+                    check=ConnectionPool.check_connection, # validates connection before every checkout
+                )
             else:
                 self.connection_pool = ConnectionPool(minconn=minconn, maxconn=maxconn, dsn=connection_string)
 

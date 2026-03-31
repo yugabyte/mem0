@@ -5,10 +5,15 @@ from langfuse import observe
 from mem0.memory.utils import format_entities, sanitize_relationship_for_cypher
 
 try:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
+    import psycopg
+    from psycopg.rows import dict_row
 except ImportError:
-    raise ImportError("psycopg2 is not installed. Please install it using pip install psycopg2-binary")
+    raise ImportError("psycopg is not installed. Please install it using pip install psycopg-binary")
+
+try:
+    from psycopg_pool import ConnectionPool
+except ImportError:
+    raise ImportError("psycopg_pool is not installed. Please install it using pip install psycopg-pool")
 
 try:
     from rank_bm25 import BM25Okapi
@@ -55,16 +60,24 @@ class MemoryGraph:
     def __init__(self, config):
         self.config = config
         
-        # Initialize PostgreSQL connection for Apache AGE
-        self.conn = psycopg2.connect(
-            host=self.config.graph_store.config.host,
-            port=self.config.graph_store.config.port,
-            database=self.config.graph_store.config.database,
-            user=self.config.graph_store.config.user,
-            password=self.config.graph_store.config.password,
+        # Initialize PostgreSQL connection for Apache AGE using psycopg3
+        connection_string = (
+            f"host={self.config.graph_store.config.host} "
+            f"port={self.config.graph_store.config.port} "
+            f"dbname={self.config.graph_store.config.database} "
+            f"user={self.config.graph_store.config.user} "
+            f"password={self.config.graph_store.config.password}"
         )
-        self.conn.autocommit = True
         
+        # to-do: make the connection pool parameters min_size and max_size configurable
+        self.connection_pool = ConnectionPool(
+            conninfo=connection_string,
+            min_size=1,   # You can make these configurable
+            max_size=5,  # You can make these configurable
+            open=True,
+            check=ConnectionPool.check_connection,
+            kwargs={"autocommit": True} 
+        )
         # Get or create graph name
         self.graph_name = getattr(self.config.graph_store.config, 'graph_name', 'mem0_graph')
         
@@ -108,7 +121,7 @@ class MemoryGraph:
 
     def _initialize_age(self):
         """Initialize Apache AGE extension and create graph if not exists."""
-        with self.conn.cursor() as cursor:
+        with self.connection_pool.getconn().cursor() as cursor:
             # Load AGE extension
             cursor.execute("CREATE EXTENSION IF NOT EXISTS age;")
             
@@ -126,7 +139,7 @@ class MemoryGraph:
 
     def _initialize_embedding_table(self):
         """Initialize pgvector storage for embeddings."""
-        with self.conn.cursor() as cursor:
+        with self.connection_pool.getconn().cursor() as cursor:
             cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             cursor.execute(
                 f"""
@@ -153,7 +166,7 @@ class MemoryGraph:
 
     @observe(name="Execute Query (yugabytedb / graph)", as_type="span")
     def _execute_sql(self, sql, params=None, fetch=False):
-        with self.conn.cursor(cursor_factory=RealDictCursor) as cursor:
+        with self.connection_pool.getconn().cursor(row_factory=dict_row) as cursor:
             cursor.execute(sql, params or [])
             if fetch:
                 return cursor.fetchall()
@@ -243,7 +256,7 @@ class MemoryGraph:
         import json
         import re
         
-        with self.conn.cursor(cursor_factory=RealDictCursor) as cursor:
+        with self.connection_pool.getconn().cursor(row_factory=dict_row) as cursor:
             # Set search path for AGE
             cursor.execute("SET search_path = ag_catalog, public;")
             
@@ -1085,5 +1098,5 @@ class MemoryGraph:
     
     def __del__(self):
         """Close the database connection when the object is destroyed."""
-        if hasattr(self, 'conn') and self.conn:
-            self.conn.close()
+        if hasattr(self, 'connection_pool') and self.connection_pool:
+            self.connection_pool.close()
