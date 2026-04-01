@@ -68,6 +68,13 @@ class MemoryGraph:
             f"user={self.config.graph_store.config.user} "
             f"password={self.config.graph_store.config.password}"
         )
+
+        # Get or create graph name (must be set before pool so _configure_conn can use it)
+        self.graph_name = getattr(self.config.graph_store.config, 'graph_name', 'mem0_graph')
+
+        graph_name = self.graph_name
+        def _configure_conn(conn):
+            conn.execute(f"SET search_path = ag_catalog, {graph_name}, \"$user\", public;")
         
         # to-do: make the connection pool parameters min_size and max_size configurable
         self.connection_pool = ConnectionPool(
@@ -76,11 +83,13 @@ class MemoryGraph:
             max_size=5,  # You can make these configurable
             open=True,
             check=ConnectionPool.check_connection,
+            configure=_configure_conn,
             kwargs={"autocommit": True} 
         )
-        # Get or create graph name
-        self.graph_name = getattr(self.config.graph_store.config, 'graph_name', 'mem0_graph')
         
+        self.node_label = "Entity"
+        self.rel_label = "CONNECTED_TO"
+
         # Initialize Apache AGE
         self._initialize_age()
         
@@ -96,9 +105,6 @@ class MemoryGraph:
 
         self.embedding_table = "mem0_age_embeddings"
         self._initialize_embedding_table()
-
-        self.node_label = "Entity"
-        self.rel_label = "CONNECTED_TO"
 
         # Default to openai if no specific provider is configured
         self.llm_provider = "openai"
@@ -120,57 +126,89 @@ class MemoryGraph:
         self.threshold = self.config.graph_store.threshold if hasattr(self.config.graph_store, 'threshold') else 0.7
 
     def _initialize_age(self):
-        """Initialize Apache AGE extension and create graph if not exists."""
-        with self.connection_pool.getconn().cursor() as cursor:
-            # Load AGE extension
-            cursor.execute("CREATE EXTENSION IF NOT EXISTS age;")
-            
-            # Load ag_catalog to the search path
-            cursor.execute("SET search_path = ag_catalog, public;")
-            
-            # Check if graph already exists
-            cursor.execute(f"SELECT * FROM ag_catalog.ag_graph WHERE name = '{self.graph_name}';")
-            if not cursor.fetchone():
-                # Create graph only if it doesn't exist
-                cursor.execute(f"SELECT * FROM ag_catalog.create_graph('{self.graph_name}');")
-                logger.info(f"Created graph '{self.graph_name}'")
-            else:
-                logger.info(f"Graph '{self.graph_name}' already exists")
+        """Initialize Apache AGE extension, create graph, and ensure labels exist."""
+        with self.connection_pool.connection() as conn:
+            with conn.cursor() as cursor:
+                # Load AGE extension
+                cursor.execute("CREATE EXTENSION IF NOT EXISTS age;")
+                
+                # Load ag_catalog and graph namespace to the search path
+                cursor.execute(f"SET search_path = ag_catalog, {self.graph_name}, public;")
+                
+                # Check if graph already exists
+                cursor.execute(f"SELECT * FROM ag_catalog.ag_graph WHERE name = '{self.graph_name}';")
+                if not cursor.fetchone():
+                    cursor.execute(f"SELECT * FROM ag_catalog.create_graph('{self.graph_name}');")
+                    logger.info(f"Created graph '{self.graph_name}'")
+                else:
+                    logger.info(f"Graph '{self.graph_name}' already exists")
+
+                # Apache AGE requires vertex/edge labels to be pre-created
+                graph_oid_query = f"SELECT graphid FROM ag_catalog.ag_graph WHERE name = '{self.graph_name}'"
+                
+                cursor.execute(
+                    f"SELECT 1 FROM ag_catalog.ag_label WHERE name = '{self.node_label}' "
+                    f"AND graph = ({graph_oid_query});"
+                )
+                if not cursor.fetchone():
+                    cursor.execute(f"SELECT * FROM ag_catalog.create_vlabel('{self.graph_name}', '{self.node_label}');")
+                    logger.info(f"Created vertex label '{self.node_label}'")
+
+                cursor.execute(
+                    f"SELECT 1 FROM ag_catalog.ag_label WHERE name = '{self.rel_label}' "
+                    f"AND graph = ({graph_oid_query});"
+                )
+                if not cursor.fetchone():
+                    cursor.execute(f"SELECT * FROM ag_catalog.create_elabel('{self.graph_name}', '{self.rel_label}');")
+                    logger.info(f"Created edge label '{self.rel_label}'")
+
+                # Warmup: run a trivial cypher query so YugabyteDB AGE initializes
+                # internal state for this graph on this connection.
+                try:
+                    cursor.execute(
+                        f"SELECT * FROM cypher('{self.graph_name}', "
+                        f"$$ MATCH (n) RETURN n LIMIT 0 $$) as (n agtype);"
+                    )
+                    cursor.fetchall()
+                except Exception:
+                    pass
 
     def _initialize_embedding_table(self):
         """Initialize pgvector storage for embeddings."""
-        with self.connection_pool.getconn().cursor() as cursor:
-            cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-            cursor.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {self.embedding_table} (
-                    graph_name TEXT NOT NULL,
-                    node_graphid BIGINT NOT NULL,
-                    node_name TEXT,
-                    embedding vector({self.embedding_dims}) NOT NULL,
-                    user_id TEXT NOT NULL,
-                    agent_id TEXT,
-                    run_id TEXT,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ DEFAULT NOW(),
-                    PRIMARY KEY (graph_name, node_graphid)
-                );
-                """
-            )
-            cursor.execute(
-                f"""
-                CREATE INDEX IF NOT EXISTS {self.embedding_table}_filters_idx
-                ON {self.embedding_table} (graph_name, user_id, agent_id, run_id);
-                """
-            )
+        with self.connection_pool.connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+                cursor.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {self.embedding_table} (
+                        graph_name TEXT NOT NULL,
+                        node_graphid BIGINT NOT NULL,
+                        node_name TEXT,
+                        embedding vector({self.embedding_dims}) NOT NULL,
+                        user_id TEXT NOT NULL,
+                        agent_id TEXT,
+                        run_id TEXT,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ DEFAULT NOW(),
+                        PRIMARY KEY (graph_name, node_graphid)
+                    );
+                    """
+                )
+                cursor.execute(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS {self.embedding_table}_filters_idx
+                    ON {self.embedding_table} (graph_name, user_id, agent_id, run_id);
+                    """
+                )
 
     @observe(name="Execute Query (yugabytedb / graph)", as_type="span")
     def _execute_sql(self, sql, params=None, fetch=False):
-        with self.connection_pool.getconn().cursor(row_factory=dict_row) as cursor:
-            cursor.execute(sql, params or [])
-            if fetch:
-                return cursor.fetchall()
-            return []
+        with self.connection_pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(sql, params or [])
+                if fetch:
+                    return cursor.fetchall()
+                return []
 
     @observe(name="Upsert Embedding (yugabytedb / graph)", as_type="span")
     def _upsert_embedding(self, node_graphid, node_name, embedding, filters):
@@ -256,72 +294,84 @@ class MemoryGraph:
         import json
         import re
         
-        with self.connection_pool.getconn().cursor(row_factory=dict_row) as cursor:
-            # Set search path for AGE
-            cursor.execute("SET search_path = ag_catalog, public;")
-            
-            # Substitute parameters into the query if provided
-            if parameters:
-                processed_query = self._substitute_parameters(cypher_query, parameters)
-            else:
-                processed_query = cypher_query
-            
-            # Extract column names from the RETURN clause
-            column_names = self._extract_return_columns(processed_query)
-            
-            # Build column definitions - use the actual column names from RETURN clause
-            if column_names:
-                column_defs = ", ".join([f"{col} agtype" for col in column_names])
-            else:
-                # Fallback to single result column
-                column_defs = "result agtype"
-            
-            # Build the cypher function call
-            age_query = f"SELECT * FROM cypher('{self.graph_name}', $$ {processed_query} $$) as ({column_defs});"
-            logger.debug(f"Executing AGE query: {age_query}")
-            
-            try:
-                cursor.execute(age_query)
-                results = cursor.fetchall()
+        with self.connection_pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cursor:
+                # Set search path for AGE — include graph namespace for MATCH/DELETE ops
+                cursor.execute(f"SET search_path = ag_catalog, {self.graph_name}, public;")
                 
-                # Debug: log raw results to understand agtype format
-                if results:
-                    logger.debug(f"Raw AGE results (first row): {results[0]}")
-                    logger.debug(f"Raw AGE result types: {[(k, type(v).__name__, repr(v)[:100]) for k, v in results[0].items()]}")
+                # Substitute parameters into the query if provided
+                if parameters:
+                    processed_query = self._substitute_parameters(cypher_query, parameters)
                 else:
-                    logger.debug(f"Query returned NO results")
-                    logger.debug(f"Query was: {age_query[:500]}...")
+                    processed_query = cypher_query
                 
-                # Parse agtype results - Apache AGE returns data in agtype format
-                # which needs to be converted from JSON strings to Python objects
-                parsed_results = []
-                for row in results:
-                    parsed_row = {}
-                    for key, value in row.items():
-                        # agtype values are stored as strings, parse them
-                        if value is not None:
-                            try:
-                                # Try to parse as JSON (agtype format)
-                                if isinstance(value, str):
-                                    # Remove the agtype type annotation if present
-                                    # Format: "string_value"::agtype or just "string_value"
-                                    parsed_value = json.loads(value) if value.startswith('{') or value.startswith('[') or value.startswith('"') else value
-                                else:
-                                    parsed_value = value
-                                parsed_row[key] = parsed_value
-                            except (json.JSONDecodeError, TypeError):
-                                # If parsing fails, use the raw value
-                                parsed_row[key] = value
+                # Extract column names from the RETURN clause
+                column_names = self._extract_return_columns(processed_query)
+                
+                # Build column definitions - use the actual column names from RETURN clause
+                if column_names:
+                    column_defs = ", ".join([f"{col} agtype" for col in column_names])
+                else:
+                    # Fallback to single result column
+                    column_defs = "result agtype"
+                
+                # Build the cypher function call
+                age_query = f"SELECT * FROM cypher('{self.graph_name}', $$ {processed_query} $$) as ({column_defs});"
+                logger.debug(f"Executing AGE query: {age_query}")
+                
+                try:
+                    # YugabyteDB AGE: first cypher() call on a connection may fail
+                    # while the function initializes internal state for the graph.
+                    # Retry once on the known "unhandled cypher(cstring)" error.
+                    try:
+                        cursor.execute(age_query)
+                    except Exception as e:
+                        if "unhandled cypher(cstring)" in str(e):
+                            logger.debug(f"Retrying cypher query after warmup failure: {e}")
+                            cursor.execute(f"SET search_path = ag_catalog, {self.graph_name}, public;")
+                            cursor.execute(age_query)
                         else:
-                            parsed_row[key] = value
-                    parsed_results.append(parsed_row)
-                
-                logger.debug(f"Parsed results (first row): {parsed_results[0] if parsed_results else 'None'}")
-                return parsed_results
-            except Exception as e:
-                logger.error(f"Error executing Cypher query: {e}")
-                logger.error(f"Query: {age_query}")
-                raise
+                            raise
+                    results = cursor.fetchall()
+                    
+                    # Debug: log raw results to understand agtype format
+                    if results:
+                        logger.debug(f"Raw AGE results (first row): {results[0]}")
+                        logger.debug(f"Raw AGE result types: {[(k, type(v).__name__, repr(v)[:100]) for k, v in results[0].items()]}")
+                    else:
+                        logger.debug(f"Query returned NO results")
+                        logger.debug(f"Query was: {age_query[:500]}...")
+                    
+                    # Parse agtype results - Apache AGE returns data in agtype format
+                    # which needs to be converted from JSON strings to Python objects
+                    parsed_results = []
+                    for row in results:
+                        parsed_row = {}
+                        for key, value in row.items():
+                            # agtype values are stored as strings, parse them
+                            if value is not None:
+                                try:
+                                    # Try to parse as JSON (agtype format)
+                                    if isinstance(value, str):
+                                        # Remove the agtype type annotation if present
+                                        # Format: "string_value"::agtype or just "string_value"
+                                        parsed_value = json.loads(value) if value.startswith('{') or value.startswith('[') or value.startswith('"') else value
+                                    else:
+                                        parsed_value = value
+                                    parsed_row[key] = parsed_value
+                                except (json.JSONDecodeError, TypeError):
+                                    # If parsing fails, use the raw value
+                                    parsed_row[key] = value
+                            else:
+                                parsed_row[key] = value
+                        parsed_results.append(parsed_row)
+                    
+                    logger.debug(f"Parsed results (first row): {parsed_results[0] if parsed_results else 'None'}")
+                    return parsed_results
+                except Exception as e:
+                    logger.error(f"Error executing Cypher query: {e}")
+                    logger.error(f"Query: {age_query}")
+                    raise
     
     def _extract_return_columns(self, cypher_query):
         """Extract column names from the RETURN clause of a Cypher query.
@@ -500,6 +550,7 @@ class MemoryGraph:
         MATCH (n:{self.node_label})
         WHERE {where_clause}
         DETACH DELETE n
+        RETURN count(*) AS deleted
         """
         
         params = {"user_id": filters["user_id"]}
@@ -819,18 +870,18 @@ class MemoryGraph:
             dest_where_clause = " AND ".join(dest_where)
 
             # Delete the specific relationship between nodes
-            # Note: We need to capture properties before DELETE
+            # Edges are stored with label CONNECTED_TO; the relationship name is a property (r.name)
+            params["relationship_name"] = relationship
             cypher = f"""
-            MATCH (n:{self.node_label})-[r:{relationship}]->(m:{self.node_label})
-            WHERE {source_where_clause} AND {dest_where_clause}
-            WITH n.name AS source_name, type(r) AS rel_type, m.name AS target_name, r
+            MATCH (n:{self.node_label})-[r:{self.rel_label}]->(m:{self.node_label})
+            WHERE {source_where_clause} AND {dest_where_clause} AND r.name = $relationship_name
             DELETE r
-            RETURN source_name AS source, rel_type AS relationship, target_name AS target
+            RETURN n.name AS source, m.name AS target
             """
 
             try:
                 result = self._execute_cypher(cypher, parameters=params)
-                results.append(result)
+                results.append([{"source": source, "relationship": relationship, "target": destination}])
             except Exception as e:
                 logger.warning(f"Error deleting entity: {e}")
                 results.append([])
@@ -1091,6 +1142,7 @@ class MemoryGraph:
         cypher_query = f"""
         MATCH (n:{self.node_label})
         DETACH DELETE n
+        RETURN count(*) AS deleted
         """
         result = self._execute_cypher(cypher_query)
         self._delete_embeddings(graph_only=True)
