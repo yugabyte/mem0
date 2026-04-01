@@ -3,7 +3,7 @@ import warnings
 from typing import Literal, Optional
 
 from openai import OpenAI
-
+from langfuse import observe, get_client
 from mem0.configs.embeddings.base import BaseEmbedderConfig
 from mem0.embeddings.base import EmbeddingBase
 
@@ -28,13 +28,12 @@ class OpenAIEmbedding(EmbeddingBase):
                 "Please use 'OPENAI_BASE_URL' instead.",
                 DeprecationWarning,
             )
-
         self.client = OpenAI(api_key=api_key, base_url=base_url)
-
+    
+    @observe(name="OpenAI Embedding", as_type="embedding")
     def embed(self, text, memory_action: Optional[Literal["add", "search", "update"]] = None):
         """
         Get the embedding for the given text using OpenAI.
-
         Args:
             text (str): The text to embed.
             memory_action (optional): The type of embedding to use. Must be one of "add", "search", or "update". Defaults to None.
@@ -42,8 +41,24 @@ class OpenAIEmbedding(EmbeddingBase):
             list: The embedding vector.
         """
         text = text.replace("\n", " ")
-        return (
-            self.client.embeddings.create(input=[text], model=self.config.model, dimensions=self.config.embedding_dims)
-            .data[0]
-            .embedding
+        response = self.client.embeddings.create(
+                input=[text], 
+                model=self.config.model, 
+                dimensions=self.config.embedding_dims
+            )
+        langfuse = get_client()
+        langfuse.update_current_generation(
+            model=self.config.model,
+            input=text,
+            usage_details={
+                "input": response.usage.prompt_tokens,  # embeddings only have prompt_tokens
+                "total": response.usage.total_tokens,
+            },
+            model_parameters={
+                "dimensions": self.config.embedding_dims,
+                "memory_action": memory_action,
+            },
+            output=f"<embedding vector of dim {len(response.data[0].embedding)}>",  # don't log full vector, too large
         )
+        
+        return response.data[0].embedding

@@ -9,8 +9,9 @@ import uuid
 import warnings
 from copy import deepcopy
 from datetime import datetime
+from functools import wraps
 from typing import Any, Dict, Optional
-
+from langfuse import observe
 import pytz
 from pydantic import ValidationError
 
@@ -47,6 +48,17 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*swigva
 
 # Initialize logger early for util functions
 logger = logging.getLogger(__name__)
+
+try:
+    from langfuse import get_client, observe
+except Exception:  # pragma: no cover
+    get_client = None
+
+    def observe(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 
 
 def _safe_deepcopy_config(config):
@@ -278,6 +290,7 @@ class Memory(MemoryBase):
         # Use agent memory extraction if agent_id is present and there are assistant messages
         return has_agent_id and has_assistant_messages
 
+    @observe(name="Create a new memory in Mem0", as_type="span")
     def add(
         self,
         messages,
@@ -327,14 +340,12 @@ class Memory(MemoryBase):
             LLMError: If LLM operations fail.
             DatabaseError: If database operations fail.
         """
-
         processed_metadata, effective_filters = _build_filters_and_metadata(
             user_id=user_id,
             agent_id=agent_id,
             run_id=run_id,
             input_metadata=metadata,
         )
-
         if memory_type is not None and memory_type != MemoryType.PROCEDURAL.value:
             raise Mem0ValidationError(
                 message=f"Invalid 'memory_type'. Please pass {MemoryType.PROCEDURAL.value} to create procedural memories.",
@@ -342,7 +353,6 @@ class Memory(MemoryBase):
                 details={"provided_type": memory_type, "valid_type": MemoryType.PROCEDURAL.value},
                 suggestion=f"Use '{MemoryType.PROCEDURAL.value}' to create procedural memories."
             )
-
         if isinstance(messages, str):
             messages = [{"role": "user", "content": messages}]
 
@@ -356,16 +366,13 @@ class Memory(MemoryBase):
                 details={"provided_type": type(messages).__name__, "valid_types": ["str", "dict", "list[dict]"]},
                 suggestion="Convert your input to a string, dictionary, or list of dictionaries."
             )
-
         if agent_id is not None and memory_type == MemoryType.PROCEDURAL.value:
             results = self._create_procedural_memory(messages, metadata=processed_metadata, prompt=prompt)
             return results
-
         if self.config.llm.config.get("enable_vision"):
             messages = parse_vision_messages(messages, self.llm, self.config.llm.config.get("vision_details"))
         else:
             messages = parse_vision_messages(messages)
-
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future1 = executor.submit(self._add_to_vector_store, messages, processed_metadata, effective_filters, infer)
             future2 = executor.submit(self._add_to_graph, messages, effective_filters)
@@ -374,15 +381,14 @@ class Memory(MemoryBase):
 
             vector_store_result = future1.result()
             graph_result = future2.result()
-
         if self.enable_graph:
             return {
                 "results": vector_store_result,
                 "relations": graph_result,
             }
-
         return {"results": vector_store_result}
 
+    @observe(name="Add to Vector Store", as_type="span")
     def _add_to_vector_store(self, messages, metadata, filters, infer):
         if not infer:
             returned_memories = []
@@ -520,6 +526,29 @@ class Memory(MemoryBase):
         else:
             new_memories_with_actions = {}
 
+        returned_memories = self._process_memory_actions(
+            new_memories_with_actions=new_memories_with_actions,
+            temp_uuid_mapping=temp_uuid_mapping,
+            new_message_embeddings=new_message_embeddings,
+            metadata=metadata,
+        )
+
+        keys, encoded_ids = process_telemetry_filters(filters)
+        capture_event(
+            "mem0.add",
+            self,
+            {"version": self.api_version, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "sync"},
+        )
+        return returned_memories
+
+    @observe(name="Updating Existing Memories", as_type="span")
+    def _process_memory_actions(
+        self,
+        new_memories_with_actions,
+        temp_uuid_mapping,
+        new_message_embeddings,
+        metadata,
+    ):
         returned_memories = []
         try:
             for resp in new_memories_with_actions.get("memory", []):
@@ -587,15 +616,9 @@ class Memory(MemoryBase):
                     logger.error(f"Error processing memory action: {resp}, Error: {e}")
         except Exception as e:
             logger.error(f"Error iterating new_memories_with_actions: {e}")
-
-        keys, encoded_ids = process_telemetry_filters(filters)
-        capture_event(
-            "mem0.add",
-            self,
-            {"version": self.api_version, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "sync"},
-        )
         return returned_memories
 
+    @observe(name="Add to GraphDB", as_type="span")
     def _add_to_graph(self, messages, filters):
         added_entities = []
         if self.enable_graph:
@@ -607,6 +630,7 @@ class Memory(MemoryBase):
 
         return added_entities
 
+    @observe(name="Retrieve a memory by ID from Mem0", as_type="retriever")
     def get(self, memory_id):
         """
         Retrieve a memory by ID.
@@ -650,6 +674,7 @@ class Memory(MemoryBase):
 
         return result_item
 
+    @observe(name="Retrieve all memories from Mem0", as_type="retriever")
     def get_all(
         self,
         *,
@@ -708,6 +733,7 @@ class Memory(MemoryBase):
 
         return {"results": all_memories_result}
 
+    @observe(name="Retrieve all memories from Vector Store", as_type="retriever")
     def _get_all_from_vector_store(self, filters, limit):
         memories_result = self.vector_store.list(filters=filters, limit=limit)
 
@@ -755,6 +781,7 @@ class Memory(MemoryBase):
 
         return formatted_memories
 
+    @observe(name="Search for memories based on a query in Mem0", as_type="retriever")
     def search(
         self,
         query: str,
@@ -989,6 +1016,7 @@ class Memory(MemoryBase):
 
         return original_memories
 
+    @observe(name="Update a memory by ID in Mem0", as_type="span")
     def update(self, memory_id, data):
         """
         Update a memory by ID.
@@ -1011,6 +1039,7 @@ class Memory(MemoryBase):
         self._update_memory(memory_id, data, existing_embeddings)
         return {"message": "Memory updated successfully!"}
 
+    @observe(name="Delete a memory by ID from Mem0", as_type="span")
     def delete(self, memory_id):
         """
         Delete a memory by ID.
@@ -1022,6 +1051,7 @@ class Memory(MemoryBase):
         self._delete_memory(memory_id)
         return {"message": "Memory deleted successfully!"}
 
+    @observe(name="Delete all memories from Mem0", as_type="span")
     def delete_all(self, user_id: Optional[str] = None, agent_id: Optional[str] = None, run_id: Optional[str] = None):
         """
         Delete all memories.
@@ -1059,6 +1089,7 @@ class Memory(MemoryBase):
 
         return {"message": "Memories deleted successfully!"}
 
+    @observe(name="Get the history of changes for a memory by ID from Mem0", as_type="retriever")
     def history(self, memory_id):
         """
         Get the history of changes for a memory by ID.
@@ -1072,6 +1103,7 @@ class Memory(MemoryBase):
         capture_event("mem0.history", self, {"memory_id": memory_id, "sync_type": "sync"})
         return self.db.get_history(memory_id)
 
+    @observe(name="Insert a new memory into the Vector Store", as_type="span")
     def _create_memory(self, data, existing_embeddings, metadata=None):
         logger.debug(f"Creating memory with {data=}")
         if data in existing_embeddings:
@@ -1100,6 +1132,7 @@ class Memory(MemoryBase):
         )
         return memory_id
 
+    @observe(name="Create a procedural memory in Mem0", as_type="span")
     def _create_procedural_memory(self, messages, metadata=None, prompt=None):
         """
         Create a procedural memory
@@ -1139,6 +1172,7 @@ class Memory(MemoryBase):
 
         return result
 
+    @observe(name="Update a memory by ID in the Vector Store", as_type="span")
     def _update_memory(self, memory_id, data, existing_embeddings, metadata=None):
         logger.info(f"Updating memory with {data=}")
 
@@ -1193,6 +1227,7 @@ class Memory(MemoryBase):
         )
         return memory_id
 
+    @observe(name="Delete a memory by ID from the Vector Store", as_type="span")
     def _delete_memory(self, memory_id):
         logger.info(f"Deleting memory with {memory_id=}")
         existing_memory = self.vector_store.get(vector_id=memory_id)
@@ -1209,6 +1244,7 @@ class Memory(MemoryBase):
         )
         return memory_id
 
+    @observe(name="Reset the memory store", as_type="span")
     def reset(self):
         """
         Reset the memory store by:
@@ -1306,7 +1342,7 @@ class AsyncMemory(MemoryBase):
         except ValidationError as e:
             logger.error(f"Configuration validation error: {e}")
             raise
-
+    
     def _should_use_agent_memory_extraction(self, messages, metadata):
         """Determine whether to use agent memory extraction based on the logic:
         - If agent_id is present and messages contain assistant role -> True
@@ -1328,6 +1364,7 @@ class AsyncMemory(MemoryBase):
         # Use agent memory extraction if agent_id is present and there are assistant messages
         return has_agent_id and has_assistant_messages
 
+    @observe(name="Create a new memory asynchronously in Mem0", as_type="span")
     async def add(
         self,
         messages,
@@ -1407,6 +1444,7 @@ class AsyncMemory(MemoryBase):
 
         return {"results": vector_store_result}
 
+    @observe(name="Add to Vector Store asynchronously", as_type="span")
     async def _add_to_vector_store(
         self,
         messages: list,
@@ -1640,6 +1678,7 @@ class AsyncMemory(MemoryBase):
         )
         return returned_memories
 
+    @observe(name="Add to GraphDB asynchronously", as_type="span")
     async def _add_to_graph(self, messages, filters):
         added_entities = []
         if self.enable_graph:
@@ -1651,6 +1690,7 @@ class AsyncMemory(MemoryBase):
 
         return added_entities
 
+    @observe(name="Retrieve a memory by ID asynchronously from Mem0", as_type="retriever")
     async def get(self, memory_id):
         """
         Retrieve a memory by ID asynchronously.
@@ -1694,6 +1734,7 @@ class AsyncMemory(MemoryBase):
 
         return result_item
 
+    @observe(name="Retrieve all memories from Mem0 asynchronously", as_type="retriever")
     async def get_all(
         self,
         *,
@@ -1757,6 +1798,7 @@ class AsyncMemory(MemoryBase):
 
         return results_dict
 
+    @observe(name="Retrieve all memories from Vector Store asynchronously", as_type="retriever")
     async def _get_all_from_vector_store(self, filters, limit):
         memories_result = await asyncio.to_thread(self.vector_store.list, filters=filters, limit=limit)
 
@@ -1804,6 +1846,7 @@ class AsyncMemory(MemoryBase):
 
         return formatted_memories
 
+    @observe(name="Search for memories based on a query in Mem0 asynchronously", as_type="retriever")
     async def search(
         self,
         query: str,
@@ -1911,6 +1954,7 @@ class AsyncMemory(MemoryBase):
 
         return {"results": original_memories}
 
+    @observe(name="Process metadata filters", as_type="span")
     def _process_metadata_filters(self, metadata_filters: Dict[str, Any]) -> Dict[str, Any]:
         """
         Process enhanced metadata filters and convert them to vector store compatible format.
@@ -1980,6 +2024,7 @@ class AsyncMemory(MemoryBase):
 
         return processed_filters
 
+    @observe(name="Check if filters contain advanced operators", as_type="span")
     def _has_advanced_operators(self, filters: Dict[str, Any]) -> bool:
         """
         Check if filters contain advanced operators that need special processing.
@@ -2007,6 +2052,7 @@ class AsyncMemory(MemoryBase):
                 return True
         return False
 
+    @observe(name="Search for memories based on a query in the Vector Store asynchronously", as_type="span")
     async def _search_vector_store(self, query, filters, limit, threshold: Optional[float] = None):
         embeddings = await asyncio.to_thread(self.embedding_model.embed, query, "search")
         memories = await asyncio.to_thread(
@@ -2047,6 +2093,7 @@ class AsyncMemory(MemoryBase):
 
         return original_memories
 
+    @observe(name="Update a memory by ID in the Vector Store asynchronously", as_type="span")
     async def update(self, memory_id, data):
         """
         Update a memory by ID asynchronously.
@@ -2070,6 +2117,7 @@ class AsyncMemory(MemoryBase):
         await self._update_memory(memory_id, data, existing_embeddings)
         return {"message": "Memory updated successfully!"}
 
+    @observe(name="Delete a memory by ID from the Vector Store asynchronously", as_type="span")
     async def delete(self, memory_id):
         """
         Delete a memory by ID asynchronously.
@@ -2081,6 +2129,7 @@ class AsyncMemory(MemoryBase):
         await self._delete_memory(memory_id)
         return {"message": "Memory deleted successfully!"}
 
+    @observe(name="Delete all memories from the Vector Store asynchronously", as_type="span")
     async def delete_all(self, user_id=None, agent_id=None, run_id=None):
         """
         Delete all memories asynchronously.
@@ -2120,6 +2169,7 @@ class AsyncMemory(MemoryBase):
 
         return {"message": "Memories deleted successfully!"}
 
+    @observe(name="Get the history of changes for a memory by ID from Mem0 asynchronously", as_type="retriever")
     async def history(self, memory_id):
         """
         Get the history of changes for a memory by ID asynchronously.
@@ -2133,6 +2183,7 @@ class AsyncMemory(MemoryBase):
         capture_event("mem0.history", self, {"memory_id": memory_id, "sync_type": "async"})
         return await asyncio.to_thread(self.db.get_history, memory_id)
 
+    @observe(name="Insert a new memory into the Vector Store asynchronously", as_type="span")
     async def _create_memory(self, data, existing_embeddings, metadata=None):
         logger.debug(f"Creating memory with {data=}")
         if data in existing_embeddings:
@@ -2166,6 +2217,7 @@ class AsyncMemory(MemoryBase):
 
         return memory_id
 
+    @observe(name="Create a procedural memory asynchronously in Mem0", as_type="span")
     async def _create_procedural_memory(self, messages, metadata=None, llm=None, prompt=None):
         """
         Create a procedural memory asynchronously
@@ -2219,6 +2271,7 @@ class AsyncMemory(MemoryBase):
 
         return result
 
+    @observe(name="Update a memory by ID in the Vector Store asynchronously", as_type="span")
     async def _update_memory(self, memory_id, data, existing_embeddings, metadata=None):
         logger.info(f"Updating memory with {data=}")
 
@@ -2276,6 +2329,7 @@ class AsyncMemory(MemoryBase):
         )
         return memory_id
 
+    @observe(name="Delete a memory by ID from the Vector Store asynchronously", as_type="span")
     async def _delete_memory(self, memory_id):
         logger.info(f"Deleting memory with {memory_id=}")
         existing_memory = await asyncio.to_thread(self.vector_store.get, vector_id=memory_id)
@@ -2295,6 +2349,7 @@ class AsyncMemory(MemoryBase):
 
         return memory_id
 
+    @observe(name="Reset the memory store asynchronously", as_type="span")
     async def reset(self):
         """
         Reset the memory store asynchronously by:

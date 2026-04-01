@@ -1,7 +1,7 @@
 import argparse
 import os
 
-from src.langmem import LangMemManager
+# from src.langmem import LangMemManager
 from src.memzero.add import MemoryADD
 from src.memzero.search import MemorySearch
 from src.openai.predict import OpenAIPredict
@@ -38,7 +38,7 @@ def main():
 
     if args.technique_type == "mem0":
         if args.method == "add":
-            memory_manager = MemoryADD(data_path="dataset/locomo10.json", is_graph=args.is_graph)
+            memory_manager = MemoryADD(data_path="<dataset_path>", is_graph=args.is_graph)
             memory_manager.process_all_conversations()
         elif args.method == "search":
             output_file_path = os.path.join(
@@ -46,14 +46,14 @@ def main():
                 f"mem0_results_top_{args.top_k}_filter_{args.filter_memories}_graph_{args.is_graph}.json",
             )
             memory_searcher = MemorySearch(output_file_path, args.top_k, args.filter_memories, args.is_graph)
-            memory_searcher.process_data_file("dataset/locomo10.json")
+            memory_searcher.process_data_file("<dataset_path>")
     elif args.technique_type == "rag":
         output_file_path = os.path.join(args.output_folder, f"rag_results_{args.chunk_size}_k{args.num_chunks}.json")
-        rag_manager = RAGManager(data_path="dataset/locomo10_rag.json", chunk_size=args.chunk_size, k=args.num_chunks)
+        rag_manager = RAGManager(data_path="<dataset_path>", chunk_size=args.chunk_size, k=args.num_chunks)
         rag_manager.process_all_conversations(output_file_path)
     elif args.technique_type == "langmem":
         output_file_path = os.path.join(args.output_folder, "langmem_results.json")
-        langmem_manager = LangMemManager(dataset_path="dataset/locomo10_rag.json")
+        langmem_manager = LangMemManager(dataset_path="<dataset_path>")
         langmem_manager.process_all_conversations(output_file_path)
     elif args.technique_type == "zep":
         if args.method == "add":

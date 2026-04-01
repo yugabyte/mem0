@@ -3,6 +3,7 @@ from typing import Dict, Optional, Union
 
 from mem0.configs.embeddings.base import BaseEmbedderConfig
 from mem0.configs.llms.anthropic import AnthropicConfig
+from mem0.configs.llms.aws_bedrock import AWSBedrockConfig
 from mem0.configs.llms.azure import AzureOpenAIConfig
 from mem0.configs.llms.base import BaseLlmConfig
 from mem0.configs.llms.deepseek import DeepSeekConfig
@@ -37,7 +38,7 @@ class LlmFactory:
         "openai": ("mem0.llms.openai.OpenAILLM", OpenAIConfig),
         "groq": ("mem0.llms.groq.GroqLLM", BaseLlmConfig),
         "together": ("mem0.llms.together.TogetherLLM", BaseLlmConfig),
-        "aws_bedrock": ("mem0.llms.aws_bedrock.AWSBedrockLLM", BaseLlmConfig),
+        "aws_bedrock": ("mem0.llms.aws_bedrock.AWSBedrockLLM", AWSBedrockConfig),
         "litellm": ("mem0.llms.litellm.LiteLLM", BaseLlmConfig),
         "azure_openai": ("mem0.llms.azure_openai.AzureOpenAILLM", AzureOpenAIConfig),
         "openai_structured": ("mem0.llms.openai_structured.OpenAIStructuredLLM", OpenAIConfig),
@@ -216,6 +217,7 @@ class GraphStoreFactory:
         "neptune": "mem0.graphs.neptune.neptunegraph.MemoryGraph",
         "neptunedb": "mem0.graphs.neptune.neptunedb.MemoryGraph",
         "kuzu": "mem0.memory.kuzu_memory.MemoryGraph",
+        "apache_age": "mem0.memory.apache_age_memory.MemoryGraph",
         "default": "mem0.memory.graph_memory.MemoryGraph",
     }
 
